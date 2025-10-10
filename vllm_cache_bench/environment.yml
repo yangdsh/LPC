@@ -1,0 +1,27 @@
+name: vllm-cuda121
+channels:
+  - nvidia
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch
+  - pytorch-cuda=12.1
+  - cuda-toolkit=12.1
+  - cudnn
+  - cmake
+  - ninja
+  - git
+  - pip:
+      - flash-attn
+      - packaging
+      - torch
+      - torchvision
+      - torchaudio
+      - sortedcontainers
+      - pandas
+      - sentence-transformers
+      - datasets
+      - transformers
+      - matplotlib
