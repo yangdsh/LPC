@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Token blocks."""
 import copy
+import os
 import sys
 from bisect import bisect_left
 from os.path import commonprefix
@@ -181,6 +182,19 @@ class PrefixCachingBlockAllocator(BlockAllocator):
                 print("Predictor worker exiting")
                 break
             checkpoint = cache_hint["checkpoint"]
+            # The path comes from the client request (cache_hint), so only
+            # load predictors from the directory named by LPC_PREDICTOR_DIR
+            # when it is set.
+            allowed_dir = os.environ.get("LPC_PREDICTOR_DIR")
+            if allowed_dir:
+                real = os.path.realpath(checkpoint)
+                root = os.path.realpath(allowed_dir)
+                if os.path.commonpath([real, root]) != root:
+                    print("Predictor checkpoint outside LPC_PREDICTOR_DIR, "
+                          "ignoring hint")
+                    cache_hint["prob_has_next"] = 0
+                    to_predict_queue.task_done()
+                    continue
             if checkpoint not in predictor_cache:
                 predictor = MLModel()
                 predictor.load_model(checkpoint)

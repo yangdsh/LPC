@@ -416,7 +416,12 @@ class MLModel:
     def load_model(self, model_path: str):
         if not os.path.exists(model_path): 
             raise FileNotFoundError(f"Model file not found at {model_path}")
-        checkpoint = torch.load(model_path, map_location=self._device)
+        # weights_only=True: the checkpoint holds a state dict and a config of
+        # plain values, so there is no need to unpickle arbitrary objects
+        # (code execution).
+        checkpoint = torch.load(model_path,
+                                map_location=self._device,
+                                weights_only=True)
         if 'config' in checkpoint:
             config = checkpoint['config']; print("Loading model configuration from checkpoint...")
             self.bert_model_name = config.get('bert_model_name', self.bert_model_name)
