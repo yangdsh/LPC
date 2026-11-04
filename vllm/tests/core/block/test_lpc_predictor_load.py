@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for loading the LPC predictor checkpoint named in a cache hint."""
 
+import os
 import pickle
 import queue
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -65,6 +67,27 @@ class RunsCodeOnLoad:
         return write_marker, (self.marker, )
 
 
+class PrintsOnLoad(torch.nn.Module):
+    """torch.jit.load of this module's archive runs __setstate__."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.zeros(1)
+
+    @torch.jit.export
+    def __getstate__(self) -> tuple[torch.Tensor, bool]:
+        return (self.weight, self.training)
+
+    @torch.jit.export
+    def __setstate__(self, state: tuple[torch.Tensor, bool]) -> None:
+        print("ran during torch.load")
+        self.weight = state[0]
+        self.training = state[1]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+
 def test_save_model_round_trip(tmp_path):
     model = make_model()
     path = str(tmp_path / "predictor.pt")
@@ -102,6 +125,32 @@ def test_load_model_rejects_pickled_code(tmp_path):
     assert not marker.exists()
 
 
+def test_load_model_rejects_torchscript_archive(tmp_path, capsys):
+    path = str(tmp_path / "predictor.pt")
+    torch.jit.save(torch.jit.script(PrintsOnLoad()), path)
+
+    with pytest.raises(RuntimeError, match="TorchScript archive"):
+        MLModel(device="cpu").load_model(path)
+    assert "ran during torch.load" not in capsys.readouterr().out
+
+
+def test_load_model_accepts_numpy_best_threshold(tmp_path):
+    # vllm_cache_bench/get_predictor_accuracy.py saves best_threshold, taken
+    # from sklearn's precision_recall_curve, so it is a numpy.float64.
+    model = make_model()
+    path = str(tmp_path / "predictor.pt")
+    model.save_model(path)
+    checkpoint = torch.load(path, weights_only=True)
+    checkpoint["config"]["best_threshold"] = np.float64(0.47)
+    torch.save(checkpoint, path)
+
+    loaded = MLModel(device="cpu")
+    loaded.load_model(path)
+
+    assert_same_weights(loaded.classifier.state_dict(),
+                        model.classifier.state_dict())
+
+
 @pytest.fixture
 def predictor_dir_and_paths(tmp_path):
     allowed = tmp_path / "predictors"
@@ -122,14 +171,19 @@ def predictor_dir_and_paths(tmp_path):
     }
 
 
-def run_predictor_worker(monkeypatch, paths):
+def run_predictor_worker(monkeypatch, paths, on_init=None):
     """Runs predictor_worker on one hint per path with a fake predictor.
 
-    Returns the paths the worker loaded and each hint's prob_has_next.
+    on_init, if given, runs when the worker creates a predictor. Returns the
+    paths the worker loaded and each hint's prob_has_next.
     """
     loaded = []
 
     class FakePredictor:
+
+        def __init__(self):
+            if on_init is not None:
+                on_init()
 
         def load_model(self, path):
             loaded.append(path)
@@ -171,7 +225,7 @@ def test_predictor_worker_only_loads_from_lpc_predictor_dir(
 
     loaded, probs = run_predictor_worker(monkeypatch, paths)
 
-    assert loaded == [paths["inside"]]
+    assert loaded == [os.path.realpath(paths["inside"])]
     assert probs == {
         "inside": 0.7,
         "outside": 0,
@@ -179,6 +233,27 @@ def test_predictor_worker_only_loads_from_lpc_predictor_dir(
         "symlink_out": 0,
         "sibling_prefix": 0,
     }
+
+
+def test_predictor_worker_loads_the_path_it_checked(monkeypatch,
+                                                    predictor_dir_and_paths):
+    allowed, paths = predictor_dir_and_paths
+    link = Path(paths["outside"]).with_name("swap.pt")
+    link.symlink_to(paths["inside"])
+
+    def repoint_link():
+        # predictor_worker creates the predictor after the LPC_PREDICTOR_DIR
+        # check and before load_model.
+        new_link = link.with_name("swap.pt.new")
+        new_link.symlink_to(paths["outside"])
+        os.replace(new_link, link)
+
+    monkeypatch.setenv("LPC_PREDICTOR_DIR", str(allowed))
+    loaded, probs = run_predictor_worker(monkeypatch, {"swap": str(link)},
+                                         on_init=repoint_link)
+
+    assert loaded == [os.path.realpath(paths["inside"])]
+    assert probs == {"swap": 0.7}
 
 
 def test_predictor_worker_loads_any_path_without_lpc_predictor_dir(

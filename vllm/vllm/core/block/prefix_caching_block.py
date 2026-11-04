@@ -187,9 +187,11 @@ class PrefixCachingBlockAllocator(BlockAllocator):
             # when it is set.
             allowed_dir = os.environ.get("LPC_PREDICTOR_DIR")
             if allowed_dir:
-                real = os.path.realpath(checkpoint)
+                # Check and then load the resolved path, so a symlink that is
+                # changed after the check cannot redirect the load.
+                checkpoint = os.path.realpath(checkpoint)
                 root = os.path.realpath(allowed_dir)
-                if os.path.commonpath([real, root]) != root:
+                if os.path.commonpath([checkpoint, root]) != root:
                     print("Predictor checkpoint outside LPC_PREDICTOR_DIR, "
                           "ignoring hint")
                     cache_hint["prob_has_next"] = 0
