@@ -134,6 +134,22 @@ def test_load_model_rejects_torchscript_archive(tmp_path, capsys):
     assert "ran during torch.load" not in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("bad_path", ["fd", True])
+def test_load_model_rejects_non_path_and_keeps_fd_open(bad_path):
+    # A request's cache_hint.checkpoint is JSON, so it can be a number or a
+    # bool. open() would take it as a file descriptor of the engine process
+    # and close it.
+    read_fd, write_fd = os.pipe()
+    try:
+        value = read_fd if bad_path == "fd" else bad_path
+        with pytest.raises(TypeError):
+            MLModel(device="cpu").load_model(value)
+        os.fstat(read_fd)  # still open
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 def test_load_model_accepts_numpy_best_threshold(tmp_path):
     # vllm_cache_bench/get_predictor_accuracy.py saves best_threshold, taken
     # from sklearn's precision_recall_curve, so it is a numpy.float64.

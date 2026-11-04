@@ -414,7 +414,11 @@ class MLModel:
         print(f"Saved to {save_path}")
 
     def load_model(self, model_path: str):
-        if not os.path.exists(model_path): 
+        # A non-path value (for example a number from a request's JSON) must
+        # fail here: open() would take an int as a file descriptor of this
+        # process and close it.
+        model_path = os.fspath(model_path)
+        if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found at {model_path}")
         with open(model_path, "rb") as f:
             # torch < 2.6 passes a TorchScript archive to torch.jit.load even
