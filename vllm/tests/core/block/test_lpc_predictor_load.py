@@ -88,10 +88,18 @@ class PrintsOnLoad(torch.nn.Module):
         return x
 
 
-def test_save_model_round_trip(tmp_path):
+# vllm_cache_bench/get_predictor_accuracy.py also saves best_threshold, taken
+# from sklearn's precision_recall_curve, so it is a numpy.float64.
+@pytest.mark.parametrize("best_threshold", [None, np.float64(0.47)],
+                         ids=["no_best_threshold", "numpy_best_threshold"])
+def test_save_model_round_trip(tmp_path, best_threshold):
     model = make_model()
     path = str(tmp_path / "predictor.pt")
     model.save_model(path)
+    if best_threshold is not None:
+        checkpoint = torch.load(path, weights_only=True)
+        checkpoint["config"]["best_threshold"] = best_threshold
+        torch.save(checkpoint, path)
 
     loaded = MLModel(device="cpu")
     loaded.load_model(path)
@@ -134,37 +142,20 @@ def test_load_model_rejects_torchscript_archive(tmp_path, capsys):
     assert "ran during torch.load" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("bad_path", ["fd", True])
-def test_load_model_rejects_non_path_and_keeps_fd_open(bad_path):
+def test_load_model_rejects_non_path_and_keeps_fd_open():
     # A request's cache_hint.checkpoint is JSON, so it can be a number or a
     # bool. open() would take it as a file descriptor of the engine process
     # and close it.
     read_fd, write_fd = os.pipe()
     try:
-        value = read_fd if bad_path == "fd" else bad_path
         with pytest.raises(TypeError):
-            MLModel(device="cpu").load_model(value)
+            MLModel(device="cpu").load_model(read_fd)
+        with pytest.raises(TypeError):
+            MLModel(device="cpu").load_model(True)
         os.fstat(read_fd)  # still open
     finally:
         os.close(read_fd)
         os.close(write_fd)
-
-
-def test_load_model_accepts_numpy_best_threshold(tmp_path):
-    # vllm_cache_bench/get_predictor_accuracy.py saves best_threshold, taken
-    # from sklearn's precision_recall_curve, so it is a numpy.float64.
-    model = make_model()
-    path = str(tmp_path / "predictor.pt")
-    model.save_model(path)
-    checkpoint = torch.load(path, weights_only=True)
-    checkpoint["config"]["best_threshold"] = np.float64(0.47)
-    torch.save(checkpoint, path)
-
-    loaded = MLModel(device="cpu")
-    loaded.load_model(path)
-
-    assert_same_weights(loaded.classifier.state_dict(),
-                        model.classifier.state_dict())
 
 
 @pytest.fixture
