@@ -23,6 +23,7 @@ change HOME in constants_nips.py and configurations are on line 45, 265, 276
 ```
 python run_nips.py
 ```
+Optional: set `LPC_PREDICTOR_DIR` to a directory and the vLLM server loads predictor checkpoints named in requests (`cache_hint`) only from that directory; when it is unset, any path is loaded.
 
 ## Plot results
 the raw results files in the paper are already inlcuded in results/ and fig/

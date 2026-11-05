@@ -414,9 +414,37 @@ class MLModel:
         print(f"Saved to {save_path}")
 
     def load_model(self, model_path: str):
-        if not os.path.exists(model_path): 
+        # A non-path value (for example a number from a request's JSON) must
+        # fail here: open() would take an int as a file descriptor of this
+        # process and close it.
+        model_path = os.fspath(model_path)
+        if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found at {model_path}")
-        checkpoint = torch.load(model_path, map_location=self._device)
+        with open(model_path, "rb") as f:
+            # torch < 2.6 passes a TorchScript archive to torch.jit.load even
+            # with weights_only=True, and that runs code from the archive
+            # (CVE-2025-32434). Refuse such archives the way torch 2.6 does.
+            try:
+                records = torch._C.PyTorchFileReader(f).get_all_records()
+            except RuntimeError:  # not a zip file (legacy torch.save format)
+                records = []
+            if "constants.pkl" in records:
+                raise RuntimeError(f"{model_path} is a TorchScript archive")
+            f.seek(0)
+            # weights_only=True: the checkpoint holds a state dict and a config
+            # of plain values, so there is no need to unpickle arbitrary
+            # objects (code execution). Checkpoints saved by
+            # vllm_cache_bench/get_predictor_accuracy.py also hold
+            # best_threshold, a numpy.float64, so allow the numpy globals that
+            # rebuild it.
+            numpy_float64 = [
+                np.float64(0).__reduce__()[0], np.dtype,
+                type(np.dtype(np.float64))
+            ]
+            with torch.serialization.safe_globals(numpy_float64):
+                checkpoint = torch.load(f,
+                                        map_location=self._device,
+                                        weights_only=True)
         if 'config' in checkpoint:
             config = checkpoint['config']; print("Loading model configuration from checkpoint...")
             self.bert_model_name = config.get('bert_model_name', self.bert_model_name)
